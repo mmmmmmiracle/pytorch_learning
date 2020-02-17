@@ -1,14 +1,18 @@
 import sys, os
 import collections
 import zipfile
+import math
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils import data
 from torch import optim
+import numpy as np
 
-
+'''
+    EncoderDecoder framework
+'''
 class Encoder(nn.Module):
     def __init__(self,**kwargs):
         super(Encoder, self).__init__(**kwargs)
@@ -72,6 +76,10 @@ class Seq2SeqDecoder(Decoder):
         out = self.dense(out).transpose(0, 1)
         return out, state
 
+
+'''
+    loss function
+'''
 class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
     def forward(self, pred, label, valid_len):
         weights = torch.ones_like(label, device = label.device)
@@ -80,7 +88,9 @@ class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
         output = super(MaskedSoftmaxCELoss, self).forward(pred.transpose(1,2), label)
         return (output * weights).mean(dim=1)
 
-
+'''
+    attention
+'''
 class DotProductAttention(nn.Module):
     def __init__(self, dropout, **kwargs):
         super(DotProductAttention, self).__init__(**kwargs)
@@ -125,7 +135,10 @@ class MLPAttention_v2(nn.Module):
         print(weights.shape, value.shape)
         return torch.bmm(weights.transpose(1, 2), value)
 
-        
+
+'''
+    Seq2Seq model with Attention
+'''   
 class AttenSeq2SeqDecoder(Decoder):
     def __init__(self, vocab_size, embed_size, num_hiddens, num_layers, dropout=0, **kwargs):
         super(AttenSeq2SeqDecoder, self).__init__(**kwargs)
@@ -197,3 +210,131 @@ def masked_softmax(X, valid_length):
         X = SequenceMask(X.reshape((-1, shape[-1])), valid_length.to(X.device))
  
         return softmax(X).reshape(shape)
+
+
+
+'''
+    Transformer
+'''
+def transpose_qkv(X, num_heads):
+    X = X.view(X.shape[0], X.shape[1], num_heads, -1)
+    X = X.transpose(2, 1).contiguous()
+    output = X.view(-1, X.shape[2], X.shape[3])
+    return output
+
+def transpose_output(X, num_heads):
+    X = X.view(-1, num_heads, X.shape[1], X.shape[2])
+    X = X.transpose(2, 1).contiguous()
+    return X.view(X.shape[0], X.shape[1], -1)
+
+def handle_valid_length(valid_length, num_heads):
+    if valid_length is not None:
+        # Copy valid_length by num_heads times
+        device = valid_length.device
+        valid_length = valid_length.cpu().numpy() if valid_length.is_cuda else valid_length.numpy()
+        if valid_length.ndim == 1:
+            valid_length = torch.FloatTensor(np.tile(valid_length, num_heads))
+        else:
+            valid_length = torch.FloatTensor(np.tile(valid_length, (num_heads,1)))
+        valid_length = valid_length.to(device)
+    return valid_length
+
+'''
+    多头注意力机制
+'''
+class MultiHeadAttention(nn.Module):
+    def __init__(self, input_size, hidden_size, num_heads, dropout, **kwargs):
+        super(MultiHeadAttention, self).__init__(**kwargs)
+        self.num_heads = num_heads
+        self.attention = DotProductAttention(dropout)
+        self.wq = nn.Linear(input_size, hidden_size, bias=False)
+        self.wk = nn.Linear(input_size, hidden_size, bias=False)
+        self.wv = nn.Linear(input_size, hidden_size, bias=False)
+        self.wo = nn.Linear(hidden_size, hidden_size, bias=False)
+        
+    def forward(self, query, key, value, valid_length):
+        query = transpose_qkv(self.wq(query), self.num_heads)
+        key      = transpose_qkv(self.wk(key), self.num_heads)
+        value  = transpose_qkv(self.wv(value), self.num_heads)
+        valid_length = handle_valid_length(valid_length, self.num_heads)
+        output = self.attention(query, key, value, valid_length)
+        output_concat = transpose_output(output, self.num_heads)
+        return self.wo(output_concat)
+
+
+'''
+    基于位置的前馈网络
+'''
+class PositionWiseFFN(nn.Module):
+    def __init__(self, input_size, ffn_hidden_size, hidden_size_out, **kwargs):
+        super(PositionWiseFFN, self).__init__(**kwargs)
+        self.ffn_1 = nn.Linear(input_size, ffn_hidden_size)
+        self.ffn_2 = nn.Linear(ffn_hidden_size, hidden_size_out)
+    
+    def forward(self, X):
+        return self.ffn_2(F.relu(self.ffn_1(X)))
+
+'''
+    Add and Norm
+'''
+class AddNorm(nn.Module):
+    def __init__(self, hidden_size, dropout, **kwargs):
+        super(AddNorm, self).__init__(**kwargs)
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(hidden_size)
+        
+    def forward(self, X, Y):
+        return self.norm(self.dropout(Y) + X)
+    
+'''
+    位置编码
+'''
+class PositionalEncoding(nn.Module):
+    def __init__(self, embed_size, dropout, max_len=1000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.P = np.zeros((1, max_len, embed_size))
+        X = np.arange(0, max_len).reshape(-1, 1) / np.power(10000, np.arange(0, embed_size, 2) / embed_size)
+        self.P[:, :, 0::2] = np.sin(X)
+        self.P[:, :, 1::2] = np.cos(X)
+        self.P = torch.FloatTensor(self.P)
+        
+    def forward(self, X):
+        if X.is_cuda and not self.P.is_cuda:
+            self.P = self.P.cuda()
+        X = X + self.P[:, :X.shape[1], :]
+        return self.dropout(X)
+    
+'''
+    Encoder Block
+'''
+class EncoderBlock(nn.Module):
+    def __init__(self, embed_size, ffn_hidden_size, num_heads, dropout, **kwargs):
+        super(EncoderBlock, self).__init__(**kwargs)
+        self.attention = MultiHeadAttention(embed_size, embed_size, num_heads, dropout)
+        self.add_norm1 = AddNorm(embed_size, dropout)
+        self.ffn = PositionWiseFFN(embed_size, ffn_hidden_size, embed_size)
+        self.add_norm2 = AddNorm(embed_size, dropout)
+    
+    def forward(self, X, valid_length):
+        Y = self.add_norm1(X, self.attention(X, X, X, valid_length))
+        return self.add_norm2(Y, self.ffn(Y))
+
+'''
+    Transformer Encoder
+'''
+class TransformerEncoder(Encoder):
+    def __init__(self, vocab_size, embed_size, ffn_hidden_size, num_heads, num_layers, dropout, **kwargs):
+        super(TransformerEncoder, self).__init__(**kwargs)
+        self.embed_size = embed_size
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.pos_encoding = PositionalEncoding(embed_size, dropout)
+        self.blocks = nn.ModuleList()
+        for i in range(num_layers):
+            self.blocks.append( EncoderBlock(embed_size, ffn_hidden_size, num_heads, dropout))
+            
+    def forward(self, X, valid_length, *args):
+        X = self.pos_encoding(self.embedding(X) * math.sqrt(self.embed_size))
+        for block in self.blocks:
+            X = block(X, valid_length)
+        return X
