@@ -11,6 +11,8 @@ from torch import optim
 from util import *
 from model import *
 
+import tqdm
+
 root_path = os.path.abspath('../../')
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -20,7 +22,7 @@ def train_ch7(model, data_iter, lr, num_epochs, device):  # Saved in d2l
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss = MaskedSoftmaxCELoss()
     tic = time.time()
-    for epoch in range(1, num_epochs+1):
+    for epoch in tqdm.tqdm(range(1, num_epochs+1)):
         l_sum, num_tokens_sum = 0.0, 0.0
         for batch in data_iter:
             optimizer.zero_grad()
@@ -65,11 +67,12 @@ def translate_ch7(model, src_sentence, src_vocab, tgt_vocab, max_len, device):
     return ' '.join(tgt_vocab.to_tokens(predict_tokens))
 
 def train_and_test():
+    src_url = os.path.join(root_path, 'inputs/translate/fra-eng/fra.txt')
     with open(src_url , 'r') as f:
           raw_text = f.read()
 
-    embed_size, num_hiddens, num_layers, dropout = 256, 256, 4, 0.0
-    batch_size, num_examples, max_len = 1024, 5e4, 10
+    embed_size, num_hiddens, num_layers, dropout = 128, 128, 2, 0.0
+    batch_size, num_examples, max_len = 4096, 5e4, 10
     lr, num_epochs, ctx = 0.005, 300, device
     tp = TextPreprocessor(raw_text, num_examples)
     tu = TextUtil(tp, max_len)
@@ -81,4 +84,7 @@ def train_and_test():
     train_ch7(model, train_iter, lr, num_epochs, ctx)
     
     for sentence in ['What is your name ? .', 'How are you ?', "I'm OK .", 'egg !', 'I like milk', 'i am a student !']:
-        print(sentence + ' => ' + translate_ch7(model, sentence, src_vocab, tar_vocab, max_len, device))
+        print(sentence + ' => ' + translate_ch7(model, sentence, src_vocab, tgt_vocab, max_len, device))
+
+
+train_and_test()
