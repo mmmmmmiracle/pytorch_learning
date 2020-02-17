@@ -48,7 +48,7 @@ class Seq2SeqEncoder(Encoder):
     def begin_state(self, batch_size, device):
         H = torch.zeros(size=(self.num_layers, batch_size, self.num_hiddens),  device=device)
         C = torch.zeros(size=(self.num_layers, batch_size, self.num_hiddens),  device=device)
-        return (H, C)
+        return [H, C]
     
     def forward(self, X, *args):
         X = self.embedding(X)
@@ -75,7 +75,7 @@ class Seq2SeqDecoder(Decoder):
 class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
     def forward(self, pred, label, valid_len):
         weights = torch.ones_like(label, device = label.device)
-        weights = SequenceMask(weights, valid_len)
+        weights = SequenceMask(weights, valid_len).float()
         self.reduction = 'none'
         output = super(MaskedSoftmaxCELoss, self).forward(pred.transpose(1,2), label)
         return (output * weights).mean(dim=1)
@@ -166,6 +166,6 @@ def masked_softmax(X, valid_length):
             valid_length = valid_length.reshape((-1,))
 #         print(valid_length.device)
         # fill masked elements with a large negative, whose exp is 0
-        X = SequenceMask(X.reshape((-1, shape[-1])), valid_length)
+        X = SequenceMask(X.reshape((-1, shape[-1])), valid_length.to(X.device))
  
         return softmax(X).reshape(shape)

@@ -86,7 +86,7 @@ class TextUtil():
             else:
                 return line + (max_len - len(line)) * [padding_token]
         lines = [vocab[line] for line in lines]
-        if is_source:
+        if not is_source:
             lines = [[vocab.bos] + line + [vocab.eos] for line in lines]
         arr = torch.tensor([_pad(line) for line in lines])
         valid_len = (arr != vocab.pad).sum(1)
