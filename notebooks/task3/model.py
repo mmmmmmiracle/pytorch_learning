@@ -126,6 +126,34 @@ class MLPAttention_v2(nn.Module):
         return torch.bmm(weights.transpose(1, 2), value)
 
         
+class AttenSeq2SeqDecoder(Decoder):
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers, dropout=0, **kwargs):
+        super(AttenSeq2SeqDecoder, self).__init__(**kwargs)
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = nn.LSTM(embed_size + num_hiddens, num_hiddens, num_layers, dropout=dropout)
+        self.dense = nn.Linear(num_hiddens, vocab_size)
+        self.atten = MLPAttention(num_hiddens, num_hiddens, dropout)
+
+    def init_state(state, valid_len, *args):
+        enc_outputs, hidden_state = state
+        return [enc_outputs.permute(1, 0, -1), hidden_state, valid_len]
+
+    def forward(self, X, state):
+        enc_outputs, hidden_state, valid_len = state
+        X = self.embedding(X).transpose(0, 1)
+        outputs = []
+        for x in X:
+            query = hidden_state[0][-1].unsqueeze(1)
+            key      = enc_outputs
+            value  = enc_outputs
+            context = self.atten(query, key, value, valid_len)
+            x = torch.cat((context, x.unsqueeze(1)), dim = -1)
+            out, hidden_state = self.rnn(x.transpose(0, 1), hidden_state)
+            outputs.append(out)
+        outputs = self.dense(torch.cat(outputs, dim=0))
+        return outputs.transpose(0, 1), [enc_outputs, hidden_state, valid_len]
+
+
 def grad_clipping(params, theta, device):
     """Clip the gradient."""
     norm = torch.tensor([0], dtype=torch.float32, device=device)
