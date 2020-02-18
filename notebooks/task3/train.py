@@ -22,7 +22,7 @@ with open(src_url , 'r') as f:
         raw_text = f.read()
 
 embed_size, num_hiddens, num_layers, dropout = 128, 128, 2, 0.0
-batch_size, num_examples, max_len = 4096, 5e4, 10
+batch_size, num_examples, max_len = 64, 1e3, 10
 lr, num_epochs, ctx = 0.005, 300, device
 tp = TextPreprocessor(raw_text, num_examples)
 tu = TextUtil(tp, max_len)
@@ -90,7 +90,7 @@ def train_and_test():
 # train_and_test_simple()
 
 def translate_attention(model, src_sentence, src_vocab, tgt_vocab, max_len, device):
-            src_tokens = src_vocab[src_sentence.lower().split(' ')]
+    src_tokens = src_vocab[src_sentence.lower().split(' ')]
     src_len = len(src_tokens)
     if src_len < max_len:
         src_tokens += [src_vocab.pad] * (max_len - src_len)
@@ -144,5 +144,16 @@ def train_and_test_attention():
     model = EncoderDecoder(encoder, decoder)
     train_attention(model, train_iter, lr, num_epochs, ctx)
     
+    for sentence in ['What is your name ? .', 'How are you ?', "I'm OK .", 'egg !', 'I like milk', 'i am a student !']:
+        print(sentence + ' => ' + translate_attention(model, sentence, src_vocab, tgt_vocab, max_len, device))
+
+def train_and_test_transformer():
+    num_heads = 4
+    encoder = TransformerEncoder(len(src_vocab), embed_size, num_hiddens, num_heads, num_layers, dropout)
+    decoder = TransformerDecoder(len(tgt_vocab), embed_size, num_hiddens, num_heads, num_layers, dropout)
+    model = EncoderDecoder(encoder, decoder)
+    train_attention(model, train_iter, lr, num_epochs, ctx)
+    
+    model.eval()
     for sentence in ['What is your name ? .', 'How are you ?', "I'm OK .", 'egg !', 'I like milk', 'i am a student !']:
         print(sentence + ' => ' + translate_attention(model, sentence, src_vocab, tgt_vocab, max_len, device))

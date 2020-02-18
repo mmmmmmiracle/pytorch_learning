@@ -81,12 +81,19 @@ class Seq2SeqDecoder(Decoder):
     loss function
 '''
 class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
-    def forward(self, pred, label, valid_len):
-        weights = torch.ones_like(label, device = label.device)
-        weights = SequenceMask(weights, valid_len).float()
-        self.reduction = 'none'
-        output = super(MaskedSoftmaxCELoss, self).forward(pred.transpose(1,2), label)
-        return (output * weights).mean(dim=1)
+    def SequenceMask(self, X, X_len,value=0):
+        maxlen = X.size(1)
+        mask = torch.arange(maxlen)[None, :].to(X_len.device) < X_len[:, None]   
+        X[~mask]=value
+        return X
+
+    def forward(self, pred, label, valid_length):
+        # the sample weights shape should be (batch_size, seq_len)
+        weights = torch.ones_like(label)
+        weights = self.SequenceMask(weights, valid_length).float()
+        self.reduction='none'
+        output=super(MaskedSoftmaxCELoss, self).forward(pred.transpose(1,2), label)
+        return (output*weights).mean(dim=1)
 
 '''
     attention
@@ -182,15 +189,16 @@ def grad_clipping_nn(model, theta, device):
     grad_clipping(model.parameters(), theta, device)
     
     
-def SequenceMask(X, X_len,value=0):
+def SequenceMask(X, X_len,value=-1e6):
     maxlen = X.size(1)
+    X_len = X_len.to(X.device)
     #print(X.size(),torch.arange((maxlen),dtype=torch.float)[None, :],'\n',X_len[:, None] )
-#     print(X_len.device, X.device)
-    mask = torch.arange((maxlen),dtype=torch.float, device=X.device)[None, :] >= X_len[:, None]   
+    mask = torch.arange((maxlen), dtype=torch.float, device=X.device)
+    mask = mask[None, :] < X_len[:, None]
     #print(mask)
-    X[mask]=value
+    X[~mask]=value
     return X
-    
+
 def masked_softmax(X, valid_length):
     # X: 3-D tensor, valid_length: 1-D or 2-D tensor
     softmax = nn.Softmax(dim=-1)
@@ -205,9 +213,8 @@ def masked_softmax(X, valid_length):
                 valid_length = torch.FloatTensor(valid_length.cpu().numpy().repeat(shape[1], axis=0))#[2,2,3,3]
         else:
             valid_length = valid_length.reshape((-1,))
-#         print(valid_length.device)
         # fill masked elements with a large negative, whose exp is 0
-        X = SequenceMask(X.reshape((-1, shape[-1])), valid_length.to(X.device))
+        X = SequenceMask(X.reshape((-1, shape[-1])), valid_length)
  
         return softmax(X).reshape(shape)
 
@@ -217,26 +224,27 @@ def masked_softmax(X, valid_length):
     Transformer
 '''
 def transpose_qkv(X, num_heads):
+    '''shape (batch_size, seq_len, num_heads * hidden_size) to (batch_size * num_heads, seq_len, hidden_size)'''
     X = X.view(X.shape[0], X.shape[1], num_heads, -1)
     X = X.transpose(2, 1).contiguous()
     output = X.view(-1, X.shape[2], X.shape[3])
     return output
 
 def transpose_output(X, num_heads):
+    '''the reverse operation of transpose_qkv'''
     X = X.view(-1, num_heads, X.shape[1], X.shape[2])
     X = X.transpose(2, 1).contiguous()
     return X.view(X.shape[0], X.shape[1], -1)
 
 def handle_valid_length(valid_length, num_heads):
-    if valid_length is not None:
-        # Copy valid_length by num_heads times
-        device = valid_length.device
-        valid_length = valid_length.cpu().numpy() if valid_length.is_cuda else valid_length.numpy()
-        if valid_length.ndim == 1:
-            valid_length = torch.FloatTensor(np.tile(valid_length, num_heads))
-        else:
-            valid_length = torch.FloatTensor(np.tile(valid_length, (num_heads,1)))
-        valid_length = valid_length.to(device)
+    # Copy valid_length by num_heads times
+    device = valid_length.device
+    valid_length = valid_length.cpu().numpy() if valid_length.is_cuda else valid_length.numpy()
+    if valid_length.ndim == 1:
+        valid_length = torch.FloatTensor(np.tile(valid_length, num_heads))
+    else:
+        valid_length = torch.FloatTensor(np.tile(valid_length, (num_heads,1)))
+    valid_length = valid_length.to(device)
     return valid_length
 
 '''
@@ -256,7 +264,8 @@ class MultiHeadAttention(nn.Module):
         query = transpose_qkv(self.wq(query), self.num_heads)
         key      = transpose_qkv(self.wk(key), self.num_heads)
         value  = transpose_qkv(self.wv(value), self.num_heads)
-        valid_length = handle_valid_length(valid_length, self.num_heads)
+        if valid_length is not None:
+            valid_length = handle_valid_length(valid_length, self.num_heads)
         output = self.attention(query, key, value, valid_length)
         output_concat = transpose_output(output, self.num_heads)
         return self.wo(output_concat)
@@ -294,7 +303,8 @@ class PositionalEncoding(nn.Module):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(dropout)
         self.P = np.zeros((1, max_len, embed_size))
-        X = np.arange(0, max_len).reshape(-1, 1) / np.power(10000, np.arange(0, embed_size, 2) / embed_size)
+        X = np.arange(0, max_len).reshape(-1, 1) / np.power(
+            10000, np.arange(0, embed_size, 2)/embed_size)
         self.P[:, :, 0::2] = np.sin(X)
         self.P[:, :, 1::2] = np.cos(X)
         self.P = torch.FloatTensor(self.P)
@@ -338,3 +348,60 @@ class TransformerEncoder(Encoder):
         for block in self.blocks:
             X = block(X, valid_length)
         return X
+
+'''
+    Transformer Decoder block
+'''
+class DecoderBlock(nn.Module):
+    def __init__(self, embed_size, ffn_hidden_size, num_heads, dropout, i, **kwargs):
+        super(DecoderBlock, self).__init__(**kwargs)
+        self.i = i
+        self.atten1 = MultiHeadAttention(embed_size, embed_size, num_heads, dropout)
+        self.add_norm1 = AddNorm(embed_size, dropout)
+        self.atten2 = MultiHeadAttention(embed_size, embed_size, num_heads, dropout)
+        self.add_norm2 = AddNorm(embed_size, dropout)
+        self.ffn = PositionWiseFFN(embed_size, ffn_hidden_size, embed_size)
+        self.add_norm3 = AddNorm(embed_size, dropout)
+
+    def forward(self, X, state):
+        enc_outputs, enc_valid_length = state[0], state[1]
+        if state[2][self.i] is None:
+            key_value = X
+        else:
+            key_value = torch.cat((state[2][self.i], X), dim=1)
+        state[2][self.i] = key_value
+
+        if self.training:
+            batch_size, seq_len, _ = X.shape
+            valid_length = torch.FloatTensor(np.tile(np.arange(1, seq_len+1), (batch_size, 1)))
+            valid_length = valid_length.to(X.device)
+        else:
+            valid_length = None
+        X2 = self.atten1(X, key_value, key_value, valid_length)
+        Y = self.add_norm1(X, X2)
+        Y2 = self.atten2(Y, enc_outputs, enc_outputs, enc_valid_length)
+        Z = self.add_norm2(Y, Y2)
+        return self.add_norm3(Z, self.ffn(Z)), state
+
+class TransformerDecoder(Decoder):
+    def __init__(self, vocab_size, embed_size, ffn_hidden_size, num_heads, num_layers, dropout, **kwargs):
+        super(TransformerDecoder, self).__init__(**kwargs)
+        self.embed_size = embed_size
+        self.num_layers = num_layers
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.pos_encoding = PositionalEncoding(embed_size, dropout)
+        self.blocks = nn.ModuleList()
+        for i in range(num_layers):
+            self.blocks.append(DecoderBlock(embed_size, ffn_hidden_size, num_heads, dropout, i))
+        self.dense = nn.Linear(embed_size, vocab_size)
+
+    def init_state(self, enc_outputs, enc_valid_length, *args):
+        return [enc_outputs, enc_valid_length, [ None for i in range(self.num_layers)] ]
+    
+    def forward(self, X, state):
+        X = self.pos_encoding(self.embedding(X) * math.sqrt(self.embed_size))
+        for block in self.blocks:
+            X, state = block(X, state)
+        return self.dense(X), state
+
+
