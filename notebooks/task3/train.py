@@ -21,8 +21,8 @@ src_url = os.path.join(root_path, 'inputs/translate/fra-eng/fra.txt')
 with open(src_url , 'r') as f:
         raw_text = f.read()
 
-embed_size, num_hiddens, num_layers, dropout = 128, 128, 2, 0.0
-batch_size, num_examples, max_len = 64, 1e3, 10
+embed_size, num_hiddens, num_layers, dropout = 64, 64, 4, 0.0
+batch_size, num_examples, max_len = 4096, 5e4, 10
 lr, num_epochs, ctx = 0.005, 300, device
 tp = TextPreprocessor(raw_text, num_examples)
 tu = TextUtil(tp, max_len)
@@ -116,7 +116,7 @@ def train_attention(model, data_iter, lr, num_epochs, device):  # Saved in d2l
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss = MaskedSoftmaxCELoss()
     tic = time.time()
-    for epoch in range(1, num_epochs+1):
+    for epoch in tqdm.tqdm(range(1, num_epochs+1)):
         l_sum, num_tokens_sum = 0.0, 0.0
         for batch in data_iter:
             optimizer.zero_grad()
@@ -157,3 +157,5 @@ def train_and_test_transformer():
     model.eval()
     for sentence in ['What is your name ? .', 'How are you ?', "I'm OK .", 'egg !', 'I like milk', 'i am a student !']:
         print(sentence + ' => ' + translate_attention(model, sentence, src_vocab, tgt_vocab, max_len, device))
+
+train_and_test_transformer()

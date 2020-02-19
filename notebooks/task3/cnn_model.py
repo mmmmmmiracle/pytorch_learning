@@ -1,4 +1,258 @@
+#%%
 import torch
-import torch.nn
+import torch.nn as nn
 import torch.nn.functional as F 
 
+class LeNet(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(LeNet, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 6, 5, padding=2),
+            nn.Sigmoid(),
+            nn.AvgPool2d(2, 2),
+            nn.Conv2d(6, 16, 5),
+            nn.Sigmoid(),
+            nn.AvgPool2d(2, 2),
+        )
+        ##经过卷积和池化层后的图像大小
+        fig_size = (fig_size - 5 + 1 + 4 ) // 1
+        fig_size = (fig_size - 2 + 2) // 2
+        fig_size = (fig_size - 5 + 1) // 1
+        fig_size = (fig_size - 2 + 2) // 2
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(16 * fig_size * fig_size, 120),
+            nn.Sigmoid(),
+            nn.Linear(120, 84),
+            nn.Sigmoid(),
+            nn.Linear(84, num_class),
+        )
+    def forward(self, X):
+        conv_features = self.conv(X)
+        output = self.fc(conv_features)
+        return output
+    
+class AlexNet(nn.Module):
+    def __init__(self,*, channels, fig_size, num_class):
+        super(AlexNet, self).__init__()
+        self.dropout = 0.5
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 96, 11, 4),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2),
+            nn.Conv2d(96, 256, 5, 1, 2),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2),
+            nn.Conv2d(256, 384, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(384, 384, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(384, 256, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2),
+        )
+        ##经过卷积和池化层后的图像大小
+        fig_size = (fig_size - 11 + 4) // 4
+        fig_size = (fig_size - 3 + 2) // 2
+        fig_size = (fig_size - 5 + 1 + 4) // 1
+        fig_size = (fig_size - 3 + 2) // 2
+        fig_size = (fig_size - 3 + 1 + 2) // 1
+        fig_size = (fig_size - 3 + 1 + 2) // 1
+        fig_size = (fig_size - 3 + 1 + 2) // 1
+        fig_size = (fig_size - 3 + 2) // 2 
+        self.fc = nn.Sequential(
+            nn.Linear(256 * fig_size * fig_size, 4096),
+            nn.ReLU(),
+            nn.Dropout(p = self.dropout),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Dropout(p = self.dropout),
+            nn.Linear(4096, num_class),
+        )
+    
+    def forward(self, X):
+        conv_features = self.conv(X)
+        output = self.fc(conv_features.view(X.shape[0], -1))
+        return output
+
+class VggBlock(nn.Module):
+    def __init__(self, conv_arch):
+        super(VggBlock, self).__init__()
+        num_convs, in_channels, out_channels = conv_arch
+        self.conv = nn.Sequential()
+        for i in range(num_convs):
+            self.conv.add_module(f'conv_{i+1}', nn.Conv2d(in_channels, out_channels, 3, padding=1))
+            in_channels = out_channels
+        self.conv.add_module('maxpool', nn.MaxPool2d(2, 2))
+    
+    def forward(self, X):
+        return self.conv(X)
+
+class Vgg11(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(Vgg11, self).__init__()
+        self.dropout = 0.5
+        self.conv_arch = [(1, channels, 64), (1, 64, 128), (2, 128, 256), (2, 256, 512), (2, 512, 512)]
+        self.fc_neuros = 4096
+
+        self.vgg_blocks = nn.Sequential()
+        for i, conv_arch in enumerate(self.conv_arch):
+            self.vgg_blocks.add_module(f'vbb_block{i+1}', VggBlock(conv_arch))
+
+        fig_size = fig_size // (2 ** len(self.conv_arch))
+        fc_features = self.conv_arch[-1][-1] * fig_size * fig_size
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(fc_features, self.fc_neuros),
+            nn.ReLU(),
+            nn.Dropout(p = self.dropout),
+            nn.Linear(self.fc_neuros, self.fc_neuros),
+            nn.ReLU(),
+            nn.Dropout(p = self.dropout),
+            nn.Linear(self.fc_neuros, num_class),
+        )
+    
+    def forward(self, X):
+        conv_features = self.vgg_blocks(X)
+        output = self.fc(conv_features)
+        return output
+        
+class NinBlock(nn.Module):
+    def __init__(self, conv_arch):
+        # conv_arch : (in_channels, out_channels, kernel_size, stride, padding)
+        super(NinBlock, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(*conv_arch),
+            nn.ReLU(),
+            nn.Conv2d(conv_arch[1], conv_arch[1], kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(conv_arch[1], conv_arch[1], kernel_size=1),
+            nn.ReLU(),
+        )
+    
+    def forward(self, X):
+        return self.conv(X)
+
+class GlobalAvgPool2d(nn.Module):
+    def __init__(self):
+        super(GlobalAvgPool2d, self).__init__()
+    
+    def forward(self, X):
+        return F.avg_pool2d(X, kernel_size = X.size()[2:])
+
+class Nin(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(Nin, self).__init__()
+        self.dropout = 0.5
+        self.conv_arch = [(channels, 96, 11, 4, 0), (96, 256, 5, 1, 2), 
+                          (256, 384, 3, 1, 1), (384, num_class, 3, 1, 1)]
+        self.nin_blocks = nn.Sequential()
+        for i, conv_arch in enumerate(self.conv_arch[:-1]):
+            self.nin_blocks.add_module(f'nin_block_{i+1}', NinBlock(conv_arch))
+            self.nin_blocks.add_module(f'max_pool_{i+1}', nn.MaxPool2d(3, 2))
+        self.nin_blocks.add_module('dropout', nn.Dropout(p = self.dropout))
+        self.nin_blocks.add_module(f'nin_block_{len(self.conv_arch)}', NinBlock(self.conv_arch[-1]))
+        self.global_avg_pool = GlobalAvgPool2d()
+        self.flatten = nn.Flatten()
+    
+    def forward(self, X):
+        conv_features = self.nin_blocks(X)
+        avg_pool = self.global_avg_pool(conv_features)
+        return self.flatten(avg_pool)
+    
+class Inception(nn.Module):
+    def __init__(self, conv_arch):
+        super(Inception, self).__init__()
+        in_channels, c1, c2, c3, c4 = conv_arch
+        self.path_1 = nn.Conv2d(in_channels, c1, kernel_size = 1)
+        self.path_2 = nn.Sequential(
+            nn.Conv2d(in_channels, c2[0], kernel_size = 1),
+            nn.ReLU(),
+            nn.Conv2d(c2[0], c2[1], kernel_size = 3, padding = 1),
+        )
+        self.path_3 = nn.Sequential(
+            nn.Conv2d(in_channels, c3[0], kernel_size = 1),
+            nn.ReLU(),
+            nn.Conv2d(c3[0], c3[1], kernel_size = 5, padding=2),
+        )
+        self.path_4 = nn.Sequential(
+            nn.MaxPool2d(kernel_size = 3, stride=1, padding=1),
+            nn.Conv2d(in_channels, c4, kernel_size=1),
+        )
+
+    def forward(self, X):
+        p1 = F.relu(self.path_1(X))
+        p2 = F.relu(self.path_2(X))
+        p3 = F.relu(self.path_3(X))
+        p4 = F.relu(self.path_4(X))
+        return torch.cat((p1, p2, p3, p4), dim = 1)
+
+class GoogleNet(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(GoogleNet, self).__init__()
+        self.b1 = nn.Sequential(
+            nn.Conv2d(channels, 64, 7, 2, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2, 1),
+        )
+        self.b2 = nn.Sequential(
+            nn.Conv2d(64, 64, 1),
+            nn.Conv2d(64, 192, 3, padding=1),
+            nn.MaxPool2d(3, 2, 1),
+        )
+        self.b3 = nn.Sequential(
+            Inception([192, 64, (96, 128), (16, 32), 32]),
+            Inception([256, 128, (128, 192), (32, 96), 64]),
+            nn.MaxPool2d(3, 2, 1),
+        )
+        self.b4 = nn.Sequential(
+            Inception([480, 192, (96, 208), (16, 48), 64]),
+            Inception([512, 160, (112, 224), (24, 64), 64]),
+            Inception([512, 128, (128, 256), (24, 64), 64]),
+            Inception([512, 112, (144, 288), (32, 64), 64]),
+            Inception([528, 256, (160, 320), (32, 128), 128]),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+        self.b5 = nn.Sequential(
+            Inception([832, 256, (160, 320), (32, 128), 128]),
+            Inception([832, 384, (192, 384), (48, 128), 128]),
+            GlobalAvgPool2d(),
+        )
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(1024, num_class),
+        )
+        self.Inception_blocks = nn.Sequential(self.b3, self.b4, self.b5)
+
+    def forward(self, X):
+        conv_features = self.b1(X)
+        conv_features = self.b2(conv_features)
+        incep_features = self.Inception_blocks(conv_features)
+        return self.fc(incep_features)
+         
+
+#%%       
+fig_size = 666
+channels = 3
+num_class = 10
+X = torch.ones([10,channels, fig_size, fig_size])
+# nin = Nin(channels = channels, fig_size = fig_size, num_class = num_class)
+# output = nin(X)
+
+# vgg11 = Vgg11(channels = channels, fig_size = fig_size, num_class = num_class)
+# output = vgg11(X)
+
+# googlenet = GoogleNet(channels = channels, fig_size = fig_size, num_class = num_class)
+# output = googlenet(X)
+
+# lenet = LeNet(fig_size=fig_size, num_class=num_class, channels=channels)
+# output = lenet(X)
+
+# alexnet = AlexNet(fig_size=fig_size, num_class=num_class,channels = channels)
+# output = alexnet(X)
+
+print(output.shape)
+
+
+
+# %%
