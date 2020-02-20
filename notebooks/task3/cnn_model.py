@@ -1,4 +1,4 @@
-#%%
+# %%
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
@@ -229,13 +229,224 @@ class GoogleNet(nn.Module):
         conv_features = self.b2(conv_features)
         incep_features = self.Inception_blocks(conv_features)
         return self.fc(incep_features)
-         
 
+class BatchNorm(nn.Module):
+    def __init__(self, *, num_features, num_dims):
+        super(BatchNorm, self).__init__()
+        super(BatchNorm, self).__init__()
+        if num_dims == 2:
+            shape = (1, num_features) #全连接层输出神经元
+        else:
+            shape = (1, num_features, 1, 1)  #通道数
+        # 参与求梯度和迭代的拉伸和偏移参数，分别初始化成0和1
+        self.gamma = nn.Parameter(torch.ones(shape))
+        self.beta = nn.Parameter(torch.zeros(shape))
+        # 不参与求梯度和迭代的变量，全在内存上初始化成0
+        self.moving_mean = torch.zeros(shape)
+        self.moving_var = torch.zeros(shape)
+        self.momentum = 0.9
+    
+    def forward(self, X):
+        if self.moving_mean.device != X.device:
+            self.moving_mean = self.moving_mean.to(X.device)
+            self.moving_var = self.moving_var.to(X.device)
+        # 保存更新过的moving_mean和moving_var, Module实例的traning属性默认为true, 调用.eval()后设成false
+        Y, self.moving_mean, self.moving_var = self._batch_norm(self.training, 
+            X, self.gamma, self.beta, self.moving_mean,
+            self.moving_var, eps=1e-5, momentum=self.momentum)
+        return Y
+
+    def _batch_norm(self, is_training, X, gamma, beta, moving_mean, moving_var, eps, momentum):
+        if not is_training:
+            # 如果是在预测模式下，直接使用传入的移动平均所得的均值和方差
+            X_hat = (X - moving_mean) / torch.sqrt(moving_var + eps)
+        else:
+            assert len(X.shape) in (2, 4)
+            if len(X.shape) == 2:
+                # 使用全连接层的情况，计算特征维上的均值和方差
+                mean = X.mean(dim=0)
+                var = ((X - mean) ** 2).mean(dim=0)
+            else:
+                # 使用二维卷积层的情况，计算通道维上（axis=1）的均值和方差。这里我们需要保持
+                # X的形状以便后面可以做广播运算
+                mean = X.mean(dim=0, keepdim=True).mean(dim=2, keepdim=True).mean(dim=3, keepdim=True)
+                var = ((X - mean) ** 2).mean(dim=0, keepdim=True).mean(dim=2, keepdim=True).mean(dim=3, keepdim=True)
+            # 训练模式下用当前的均值和方差做标准化
+            X_hat = (X - mean) / torch.sqrt(var + eps)
+            # 更新移动平均的均值和方差
+            moving_mean = momentum * moving_mean + (1.0 - momentum) * mean
+            moving_var = momentum * moving_var + (1.0 - momentum) * var
+        Y = gamma * X_hat + beta  # 拉伸和偏移
+        return Y, moving_mean, moving_var
+
+class BLeNet(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(BLeNet, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 6, 5, padding=2),
+            BatchNorm(num_features=6, num_dims = 4),
+            nn.Sigmoid(),
+            nn.AvgPool2d(2, 2),
+            nn.Conv2d(6, 16, 5),
+            BatchNorm(num_features=16, num_dims = 4),
+            nn.Sigmoid(),
+            nn.AvgPool2d(2, 2),
+        )
+        ##经过卷积和池化层后的图像大小
+        fig_size = (fig_size - 5 + 1 + 4 ) // 1
+        fig_size = (fig_size - 2 + 2) // 2
+        fig_size = (fig_size - 5 + 1) // 1
+        fig_size = (fig_size - 2 + 2) // 2
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(16 * fig_size * fig_size, 120),
+            BatchNorm(num_features=120, num_dims = 2),
+            nn.Sigmoid(),
+            nn.Linear(120, 84),
+            BatchNorm(num_features=84, num_dims = 2),
+            nn.Sigmoid(),
+            nn.Linear(84, num_class),
+        )
+    def forward(self, X):
+        conv_features = self.conv(X)
+        output = self.fc(conv_features)
+        return output
+
+class Residual(nn.Module):
+    #可以设定输出通道数、是否使用额外的1x1卷积层来修改通道数以及卷积层的步幅。
+    def __init__(self, in_channels, out_channels, use_1x1conv=False, stride=1):
+        super(Residual, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=stride)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        if use_1x1conv:
+            self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride)
+        else:
+            self.conv3 = None
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, X):
+        Y = F.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        if self.conv3:
+            X = self.conv3(X)
+        return F.relu(Y + X)
+
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, num_rediduals, first_block=False):
+        super(ResBlock, self).__init__()
+        if first_block:
+            assert in_channels == out_channels # 第一个模块的通道数同输入通道数一致
+        block = []
+        for i in range(num_rediduals):
+            block.append(Residual(in_channels, out_channels, use_1x1conv=not first_block, stride=2-int(first_block)))
+            in_channels = out_channels
+        self.resi_block = nn.Sequential(*block)
+
+    def forward(self, X):
+        return self.resi_block(X)
+
+class ResNet(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(ResNet, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 64, 7, 2, 3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2, 1),
+        )
+        self.res_block_arch = [(64, 64, 2, True), (64, 128, 2), (128, 256, 2), (256, 512, 2)]
+        self.res_blocks = nn.Sequential()
+        for i, arch in enumerate(self.res_block_arch):
+            self.res_blocks.add_module(f'res_block_{i+1}', ResBlock(*arch))
+        self.global_avg_pool = GlobalAvgPool2d()
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512, num_class),
+        )
+
+    def forward(self, X):
+        conv_features = self.conv(X)
+        res_features = self.res_blocks(conv_features)
+        global_avg_pool = self.global_avg_pool(res_features)
+        return self.fc(global_avg_pool)
+
+class DenseBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, num_convs):
+        super(DenseBlock, self).__init__()
+        dense_block = []
+        for i in range(num_convs):
+            in_ch = in_channels + i * out_channels
+            dense_block.append(nn.Sequential(
+                nn.BatchNorm2d(in_ch),
+                nn.ReLU(),
+                nn.Conv2d(in_ch, out_channels, 3, padding=1),
+            ))
+        self.dense_block = nn.ModuleList(dense_block)
+        self.out_channels = in_channels + num_convs * out_channels
+
+    def forward(self, X):
+        for block in self.dense_block:
+            Y = block(X)
+            X = torch.cat((X, Y), dim = 1)
+        return X
+
+class TransBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(TransBlock, self).__init__()
+        self.trans_block = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(),
+            nn.Conv2d(in_channels, out_channels, 1),
+            nn.AvgPool2d(2, 2),
+        )
+    def forward(self, X):
+        return self.trans_block(X)
+
+class DenseNet(nn.Module):
+    def __init__(self, *, channels, fig_size, num_class):
+        super(DenseNet, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 64, 7, 2, 3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(3, 2, 1),
+        )
+        self.dense_blocks = nn.Sequential()
+        self.num_convs_list = [4 for i in range(4)]
+        cur_channels, self.growth_rate = 64, 32
+        for i, num_conv in enumerate(self.num_convs_list):
+            dense_block = DenseBlock(cur_channels, self.growth_rate, num_conv)
+            self.dense_blocks.add_module(f'dense_block_{i+1}', dense_block)
+            cur_channels = dense_block.out_channels
+            if i != len(self.num_convs_list) - 1:
+                self.dense_blocks.add_module(f'transition_block_{i+1}', TransBlock(cur_channels, cur_channels // 2))
+                cur_channels //= 2
+        self.bn = nn.Sequential(nn.BatchNorm2d(cur_channels), nn.ReLU())
+        self.global_avg_pool = GlobalAvgPool2d()
+        self.fc = nn.Sequential(nn.Flatten(), nn.Linear(cur_channels, num_class))
+
+    def forward(self, X):
+        conv_features = self.conv(X)
+        dense_features = self.dense_blocks(conv_features)
+        batch_normed = self.bn(dense_features)
+        global_avg_pool = self.global_avg_pool(batch_normed)
+        return self.fc(global_avg_pool)
 #%%       
-fig_size = 666
+
+fig_size = 224
 channels = 3
 num_class = 10
 X = torch.ones([10,channels, fig_size, fig_size])
+
+# dense = DenseBlock(3, 10, 34)
+# out = dense(X)
+# print(out.shape)
+
+dense = DenseNet(channels = channels, fig_size = fig_size, num_class = num_class)
+output = dense(X)
+# print(dense)
+
 # nin = Nin(channels = channels, fig_size = fig_size, num_class = num_class)
 # output = nin(X)
 
@@ -245,11 +456,14 @@ X = torch.ones([10,channels, fig_size, fig_size])
 # googlenet = GoogleNet(channels = channels, fig_size = fig_size, num_class = num_class)
 # output = googlenet(X)
 
-# lenet = LeNet(fig_size=fig_size, num_class=num_class, channels=channels)
+# lenet = BLeNet(fig_size=fig_size, num_class=num_class, channels=channels)
 # output = lenet(X)
 
 # alexnet = AlexNet(fig_size=fig_size, num_class=num_class,channels = channels)
 # output = alexnet(X)
+
+# resnet = ResNet(fig_size=fig_size, num_class=num_class, channels=channels)
+# output = resnet(X)
 
 print(output.shape)
 
