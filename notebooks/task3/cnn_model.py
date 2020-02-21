@@ -432,6 +432,8 @@ class DenseNet(nn.Module):
         batch_normed = self.bn(dense_features)
         global_avg_pool = self.global_avg_pool(batch_normed)
         return self.fc(global_avg_pool)
+
+
 #%%       
 
 fig_size = 224
