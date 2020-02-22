@@ -92,10 +92,11 @@
 
 import torch
 import torchtext.vocab as vocab
+import os
 
 print([key for key in vocab.pretrained_aliases.keys() if "glove" in key])
-cache_dir = "~/.cache/torch/text/glove/"
-glove = vocab.GloVe(name='6B', dim=50, cache=cache_dir)
+cache_dir = "/home/gongxj/students/.cache/torch/text/glove/"
+glove = vocab.Vectors(name=os.path.join(cache_dir, 'glove.6B.300d.txt'))
 print("一共包含%d个词。" % len(glove.stoi))
 print(glove.stoi['beautiful'], glove.itos[3366])
 
@@ -149,7 +150,7 @@ get_similar_tokens('baby', 3, glove)
 # In[5]:
 
 
-get_similar_tokens('beautiful', 3, glove)
+get_similar_tokens('farm', 3, glove)
 
 
 # ### 求类比词
