@@ -253,7 +253,7 @@ net = BiRNN(vocab, embed_size, num_hiddens, num_layers)
 
 
 cache_dir = "/home/gongxj/students/.cache/torch/text/glove/"
-glove_vocab = Vocab.Vectors(name=os.path.join(cache_dir, 'glove.6B.100d.txt'))
+glove_vocab = Vocab.Vectors(name=os.path.join(cache_dir, 'glove.twitter.27B.100d.txt'))
 
 def load_pretrained_embedding(words, pretrained_vocab):
     '''
@@ -544,7 +544,7 @@ net = TextCNN(vocab, embed_size, kernel_sizes, nums_channels)
 # In[26]:
 
 
-lr, num_epochs = 0.001, 15
+lr, num_epochs = 0.001, 5
 optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr)
 loss = nn.CrossEntropyLoss()
 train(train_iter, test_iter, net, loss, optimizer, device, num_epochs)
