@@ -293,19 +293,19 @@ device = cfg.device
 # best_test_acc = train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, device,warm_epoch )
 # '''train'''
 # # scheduler = StepLR(optimizer, 10, 0.6)
-# optimizer = optim.SGD(net.parameters(),lr=lr/10,  momentum=0.9, weight_decay=5e-4) 
+# optimizer = optim.SGD(net.parameters(),lr=lr/5,  momentum=0.9, weight_decay=5e-4) 
 # # optimizer = optim.Adam(net.parameters(), lr=lr)
 # scheduler = CosineAnnealingLR(optimizer, epoch, 1e-5)  
 # net.load_state_dict(torch.load(os.path.join(cfg.model_saved_path, "best.pth")))
 # best_test_acc = train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, device, epoch, last_acc=best_test_acc)
 
-'''warm retrain'''
+# '''warm retrain'''
 # decay = 10
 # optimizer = optim.SGD(net.parameters(),lr=warm_lr / decay,  momentum=0.9, weight_decay=5e-4) 
 # # optimizer = optim.Adam(net.parameters(), lr=warm_lr/10)
 # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0 = warm_epoch, T_mult= 1)
 # net.load_state_dict(torch.load(os.path.join(cfg.model_saved_path, "best.pth")))
-# best_test_acc = train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, cfg.device, warm_epoch, last_acc=0.9584 )
+# best_test_acc = train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, cfg.device, warm_epoch, last_acc=best_test_acc )
 
 
 '''predict'''
