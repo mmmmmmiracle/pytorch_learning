@@ -168,7 +168,7 @@ def evaluate_accuracy(data_iter, net, device=None):
     net.train() # 改回训练模式
     return acc_sum / n
 
-def train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, device, num_epochs, tolerance=10, last_acc=0):
+def train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, device, num_epochs, tolerance=20, last_acc=0):
     import numpy as np
     net = net.to(device)
     tmp = tolerance
@@ -281,7 +281,7 @@ from torch.optim.lr_scheduler import (
 )
 from tricks import *
 warm_epoch = 10
-epoch = 50
+epoch = 100
 warm_lr = 0.01
 lr = 0.1 * batch_size / 256
 device = cfg.device
@@ -293,7 +293,7 @@ device = cfg.device
 # best_test_acc = train_model(net, train_iter, test_iter, batch_size, optimizer, scheduler, device,warm_epoch )
 # '''train'''
 # # scheduler = StepLR(optimizer, 10, 0.6)
-# optimizer = optim.SGD(net.parameters(),lr=lr/5,  momentum=0.9, weight_decay=5e-4) 
+# optimizer = optim.SGD(net.parameters(),lr=lr,  momentum=0.9, weight_decay=5e-4) 
 # # optimizer = optim.Adam(net.parameters(), lr=lr)
 # scheduler = CosineAnnealingLR(optimizer, epoch, 1e-5)  
 # net.load_state_dict(torch.load(os.path.join(cfg.model_saved_path, "best.pth")))
